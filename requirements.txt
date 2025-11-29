@@ -1,9 +1,20 @@
+# Streamlit and UI
 streamlit>=1.31.0
+
+# YOLOv8
 ultralytics>=8.1.0
-tensorflow==2.20.0
+
+# TensorFlow and H5 support (compatible with .h5 models)
+tensorflow==2.13.0
+h5py==3.9.0
+protobuf<5.0.0,>=3.20.0
+
+# Image handling
 opencv-python-headless>=4.9.0.80
-numpy>=1.24.0,<2.0.0
 Pillow>=10.0.0
-protobuf>=5.28.0
+
+# Scientific computing
+numpy>=1.24.0,<2.0.0
+
+# File download utility
 gdown>=4.7.1
-h5py>=3.11.0
