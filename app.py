@@ -73,6 +73,12 @@ st.markdown("""
 @st.cache_resource
 def load_models():
     """Download and load YOLO detection and TensorFlow classifier models"""
+    import os
+    import gdown
+    import torch
+    from ultralytics import YOLO
+    import tensorflow as tf
+
     # Google Drive file IDs
     YOLO_ID = "1DH5zyX4jBNA3aLPjiwtA0Gh_HEm5z9cv"
     CLASSIFIER_ID = "17tXUZkDWK4a2ia7DbNhWhS2k4_DbtiYc"
@@ -103,12 +109,19 @@ def load_models():
             st.error(f"❌ Error downloading classifier model: {e}")
             return None, None
 
-    # Add safe globals for YOLO
-    torch.serialization.add_safe_globals([DetectionModel])
-
     # Load YOLO model
     try:
         st.info("🔄 Loading YOLO model...")
+        
+        # Handle PyTorch safe globals for newer versions
+        try:
+            from ultralytics.nn.tasks import DetectionModel
+            if hasattr(torch.serialization, 'add_safe_globals'):
+                torch.serialization.add_safe_globals([DetectionModel])
+        except:
+            pass  # Older PyTorch versions don't need this
+        
+        # Load YOLO
         yolo_model = YOLO(yolo_path)
         st.success("✅ YOLO model loaded!")
     except Exception as e:
@@ -119,29 +132,31 @@ def load_models():
     try:
         st.info("🔄 Loading classifier model...")
         
-        # Custom InputLayer to handle old batch_shape parameter
+        # Fix for old Keras models with batch_shape parameter
         from tensorflow.keras import layers
         
-        class CustomInputLayer(layers.InputLayer):
+        class CompatibleInputLayer(layers.InputLayer):
             def __init__(self, batch_shape=None, input_shape=None, **kwargs):
-                # Convert old batch_shape to new input_shape format
+                # Handle old batch_shape parameter
                 if batch_shape is not None and input_shape is None:
-                    input_shape = batch_shape[1:]  # Remove batch dimension
-                # Remove batch_shape from kwargs to avoid passing it to parent
+                    input_shape = batch_shape[1:]
+                # Remove batch_shape from kwargs
                 kwargs.pop('batch_shape', None)
                 super().__init__(input_shape=input_shape, **kwargs)
         
-        # Register custom object
-        custom_objects = {'InputLayer': CustomInputLayer}
+        # Custom objects for loading
+        custom_objects = {
+            'InputLayer': CompatibleInputLayer,
+        }
         
-        # Load model with custom objects
+        # Load with custom objects and without compilation
         classifier_model = tf.keras.models.load_model(
             classifier_path,
             custom_objects=custom_objects,
             compile=False
         )
         
-        # Recompile
+        # Compile with current optimizer
         classifier_model.compile(
             optimizer='adam',
             loss='categorical_crossentropy',
@@ -151,7 +166,8 @@ def load_models():
         st.success("✅ Classifier model loaded!")
     except Exception as e:
         st.error(f"❌ Error loading classifier model: {e}")
-        st.error(f"Full error: {str(e)}")
+        import traceback
+        st.error(f"Details: {traceback.format_exc()}")
         return yolo_model, None
 
     return yolo_model, classifier_model
