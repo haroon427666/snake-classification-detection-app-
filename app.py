@@ -11,14 +11,6 @@ import json
 from io import BytesIO
 import zipfile
 from datetime import datetime
-import gdown
-import torch
-from ultralytics.nn.tasks import DetectionModel
-import keras
-
-# Classification and Detection Classes
-CLASSIFICATION_CLASSES = ["non-venomous", "venomous"]
-DETECTION_CLASSES = ["snake"]
 
 # ---------------------------
 # Page Configuration
@@ -72,105 +64,23 @@ st.markdown("""
 # ---------------------------
 @st.cache_resource
 def load_models():
-    """Download and load YOLO detection and TensorFlow classifier models"""
-    import os
-    import gdown
-    import torch
-    from ultralytics import YOLO
-    import tensorflow as tf
-
-    # Google Drive file IDs
-    YOLO_ID = "1DH5zyX4jBNA3aLPjiwtA0Gh_HEm5z9cv"
-    CLASSIFIER_ID = "17tXUZkDWK4a2ia7DbNhWhS2k4_DbtiYc"
-
-    # Create directories if missing
-    os.makedirs("weights", exist_ok=True)
-    os.makedirs("models", exist_ok=True)
-
-    # Download YOLO model if missing
-    yolo_path = "weights/best.pt"
-    if not os.path.exists(yolo_path):
-        st.info("🔽 Downloading YOLO model... (one-time setup, ~200MB)")
-        try:
-            gdown.download(f"https://drive.google.com/uc?id={YOLO_ID}", yolo_path, quiet=False)
-            st.success("✅ YOLO model downloaded!")
-        except Exception as e:
-            st.error(f"❌ Error downloading YOLO model: {e}")
-            return None, None
-
-    # Download classifier if missing
-    classifier_path = "models/snake_venom_classifier_effnetv2L.h5"
-    if not os.path.exists(classifier_path):
-        st.info("🔽 Downloading classifier model... (one-time setup, ~750MB, may take 5-10 minutes)")
-        try:
-            gdown.download(f"https://drive.google.com/uc?id={CLASSIFIER_ID}", classifier_path, quiet=False)
-            st.success("✅ Classifier model downloaded!")
-        except Exception as e:
-            st.error(f"❌ Error downloading classifier model: {e}")
-            return None, None
-
-    # Load YOLO model
+    """Load YOLO and Classification models"""
     try:
-        st.info("🔄 Loading YOLO model...")
+        # Update these paths for deployment
+        DETECTION_MODEL = "weights/best.pt"  # Place in weights folder
+        CLASSIFICATION_MODEL = "models/snake_venom_classifier_effnetv2L.h5"  # Place in models folder
         
-        # Handle PyTorch safe globals for newer versions
-        try:
-            from ultralytics.nn.tasks import DetectionModel
-            if hasattr(torch.serialization, 'add_safe_globals'):
-                torch.serialization.add_safe_globals([DetectionModel])
-        except:
-            pass  # Older PyTorch versions don't need this
-        
-        # Load YOLO
-        yolo_model = YOLO(yolo_path)
-        st.success("✅ YOLO model loaded!")
+        yolo_model = YOLO(DETECTION_MODEL)
+        classifier_model = tf.keras.models.load_model(CLASSIFICATION_MODEL)
+        return yolo_model, classifier_model
     except Exception as e:
-        st.error(f"❌ Error loading YOLO model: {e}")
+        st.error(f"Error loading models: {e}")
+        st.info("Please ensure model files are in the correct directories:\n- weights/best.pt\n- models/snake_venom_classifier_effnetv2L.h5")
         return None, None
 
-    # Load TensorFlow classifier with compatibility fix
-    try:
-        st.info("🔄 Loading classifier model...")
-        
-        # Fix for old Keras models with batch_shape parameter
-        from tensorflow.keras import layers
-        
-        class CompatibleInputLayer(layers.InputLayer):
-            def __init__(self, batch_shape=None, input_shape=None, **kwargs):
-                # Handle old batch_shape parameter
-                if batch_shape is not None and input_shape is None:
-                    input_shape = batch_shape[1:]
-                # Remove batch_shape from kwargs
-                kwargs.pop('batch_shape', None)
-                super().__init__(input_shape=input_shape, **kwargs)
-        
-        # Custom objects for loading
-        custom_objects = {
-            'InputLayer': CompatibleInputLayer,
-        }
-        
-        # Load with custom objects and without compilation
-        classifier_model = tf.keras.models.load_model(
-            classifier_path,
-            custom_objects=custom_objects,
-            compile=False
-        )
-        
-        # Compile with current optimizer
-        classifier_model.compile(
-            optimizer='adam',
-            loss='categorical_crossentropy',
-            metrics=['accuracy']
-        )
-        
-        st.success("✅ Classifier model loaded!")
-    except Exception as e:
-        st.error(f"❌ Error loading classifier model: {e}")
-        import traceback
-        st.error(f"Details: {traceback.format_exc()}")
-        return yolo_model, None
+CLASSIFICATION_CLASSES = ["non-venomous", "venomous"]
+DETECTION_CLASSES = ["snake"]
 
-    return yolo_model, classifier_model
 # ---------------------------
 # Helper Functions
 # ---------------------------
