@@ -13,6 +13,8 @@ import zipfile
 from datetime import datetime
 import gdown
 
+CLASSIFICATION_CLASSES = ["Non-Venomous", "Venomous"]
+
 # ---------------------------
 # Page Configuration
 # ---------------------------
