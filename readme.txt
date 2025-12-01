@@ -10,7 +10,7 @@ AI-powered system to detect snakes and classify them as venomous or non-venomous
 - Adjustable confidence thresholds
 
 ## Usage
-Visit: https://your-app-name.streamlit.app
+Visit: https://snake-classification-detection-app.streamlit.app/
 
 ## Local Development
 ```bash
