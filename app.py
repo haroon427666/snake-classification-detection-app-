@@ -14,8 +14,6 @@ from datetime import datetime
 import gdown
 
 CLASSIFICATION_CLASSES = ["Non-Venomous", "Venomous"]
-
-# For your detection model (YOLO)
 DETECTION_CLASSES = ["snake"]
 
 # ---------------------------
@@ -62,6 +60,14 @@ st.markdown("""
         background-color: #e8f5e9;
         border: 3px solid #2ca02c;
     }
+    .no-snake-box {
+        background-color: #fff3cd;
+        border: 3px solid #ffc107;
+        padding: 1rem;
+        border-radius: 0.5rem;
+        margin: 1rem 0;
+        text-align: center;
+    }
     </style>
 """, unsafe_allow_html=True)
 
@@ -100,28 +106,27 @@ def load_models():
         st.error(f"Error loading models: {e}")
         st.info("Please ensure the Drive links are public and correct.")
         return None, None
+
 # ---------------------------
 # Helper Functions
 # ---------------------------
 def classify_full_image(image, classifier_model):
     """Classify the full image using EfficientNetV2L preprocessing"""
-    # Convert PIL to numpy if needed
     if isinstance(image, Image.Image):
         img = np.array(image)
     else:
         img = image.copy()
     
     # Ensure RGB format
-    if len(img.shape) == 2:  # Grayscale
+    if len(img.shape) == 2:
         img = cv2.cvtColor(img, cv2.COLOR_GRAY2RGB)
-    elif img.shape[2] == 4:  # RGBA
+    elif img.shape[2] == 4:
         img = cv2.cvtColor(img, cv2.COLOR_RGBA2RGB)
     
-    # Resize to model input size (384x384 for EfficientNetV2L)
+    # Resize to model input size
     img_resized = cv2.resize(img, (384, 384))
     
-    # CRITICAL: Use EfficientNetV2 preprocessing (same as training)
-    # This applies the correct normalization that the model expects
+    # Use EfficientNetV2 preprocessing
     img_preprocessed = tf.keras.applications.efficientnet_v2.preprocess_input(img_resized)
     img_batch = np.expand_dims(img_preprocessed, axis=0)
     
@@ -134,13 +139,12 @@ def classify_full_image(image, classifier_model):
 
 def detect_snakes(image, yolo_model, conf_threshold=0.25):
     """Detect snakes in image using YOLO"""
-    # Convert PIL to numpy array
     if isinstance(image, Image.Image):
         img = np.array(image)
     else:
         img = image.copy()
     
-    # Ensure RGB format for YOLO
+    # Ensure RGB format
     if len(img.shape) == 2:
         img = cv2.cvtColor(img, cv2.COLOR_GRAY2RGB)
     elif img.shape[2] == 4:
@@ -178,7 +182,6 @@ def detect_snakes(image, yolo_model, conf_threshold=0.25):
 
 def draw_detections(image, detections, classification_label, classification_conf):
     """Draw bounding boxes on image based on classification result"""
-    # Convert PIL to numpy if needed
     if isinstance(image, Image.Image):
         img = np.array(image)
     else:
@@ -191,7 +194,7 @@ def draw_detections(image, detections, classification_label, classification_conf
         img = cv2.cvtColor(img, cv2.COLOR_RGBA2RGB)
     
     # Determine color based on classification
-    color = (255, 0, 0) if classification_label == "venomous" else (0, 255, 0)  # Red/Green in RGB
+    color = (255, 0, 0) if classification_label == "Venomous" else (0, 255, 0)
     
     # Draw each detection
     for det in detections:
@@ -216,27 +219,36 @@ def draw_detections(image, detections, classification_label, classification_conf
     
     return img
 
-def classify_then_detect(image, yolo_model, classifier_model, conf_threshold=0.25):
+def detect_then_classify(image, yolo_model, classifier_model, conf_threshold=0.25):
     """
-    New pipeline: Classify full image first, then detect and draw boxes
+    IMPROVED PIPELINE:
+    1. First detect if snake exists using YOLO
+    2. If snake detected -> classify FULL image (not cropped)
+    3. If no snake -> return None for classification
     """
-    # Step 1: Classify the full image
-    classification_label, classification_conf = classify_full_image(image, classifier_model)
     
-    # Step 2: Detect snakes in the image
+    # STEP 1: Detect snakes first
     detections = detect_snakes(image, yolo_model, conf_threshold)
     
-    # Step 3: Draw detections with classification result
+    # STEP 2: Only classify if snake was detected
     if detections:
+        # Snake detected! Now classify the FULL image
+        classification_label, classification_conf = classify_full_image(image, classifier_model)
+        
+        # Draw bounding boxes with classification result
         processed_img = draw_detections(image, detections, classification_label, classification_conf)
+        
+        return processed_img, classification_label, classification_conf, detections
+    
     else:
-        # No detections, return original image
+        # NO SNAKE DETECTED - Don't classify
         if isinstance(image, Image.Image):
             processed_img = np.array(image)
         else:
             processed_img = image.copy()
-    
-    return processed_img, classification_label, classification_conf, detections
+        
+        # Return None for classification since no snake was found
+        return processed_img, None, None, []
 
 # ---------------------------
 # Download Helper Functions
@@ -246,13 +258,20 @@ def create_result_json(filename, classification_label, classification_conf, dete
     result = {
         "filename": filename,
         "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "classification": {
-            "label": classification_label,
-            "confidence": float(classification_conf)
-        },
-        "detections": []
+        "snake_detected": len(detections) > 0,
+        "total_snakes_detected": len(detections)
     }
     
+    # Only add classification if snake was detected
+    if classification_label is not None:
+        result["classification"] = {
+            "label": classification_label,
+            "confidence": float(classification_conf)
+        }
+    else:
+        result["classification"] = None
+    
+    result["detections"] = []
     for idx, det in enumerate(detections, 1):
         result["detections"].append({
             "snake_number": idx,
@@ -265,8 +284,6 @@ def create_result_json(filename, classification_label, classification_conf, dete
             "detection_confidence": float(det['detection_confidence'])
         })
     
-    result["total_snakes_detected"] = len(detections)
-    
     return result
 
 def create_result_text(filename, classification_label, classification_conf, detections):
@@ -275,19 +292,24 @@ def create_result_text(filename, classification_label, classification_conf, dete
     text += f"{'=' * 50}\n\n"
     text += f"Filename: {filename}\n"
     text += f"Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
-    text += f"CLASSIFICATION RESULT:\n"
-    text += f"  Label: {classification_label.upper()}\n"
-    text += f"  Confidence: {classification_conf:.2%}\n\n"
-    text += f"DETECTION RESULTS:\n"
-    text += f"  Total Snakes Detected: {len(detections)}\n\n"
     
-    if detections:
+    if len(detections) > 0:
+        text += f"SNAKE DETECTED: YES\n"
+        text += f"Total Snakes Detected: {len(detections)}\n\n"
+        
+        text += f"CLASSIFICATION RESULT:\n"
+        text += f"  Label: {classification_label.upper()}\n"
+        text += f"  Confidence: {classification_conf:.2%}\n\n"
+        
+        text += f"DETECTION DETAILS:\n"
         for idx, det in enumerate(detections, 1):
             text += f"  Snake #{idx}:\n"
             text += f"    Bounding Box: [{det['bbox'][0]}, {det['bbox'][1]}, {det['bbox'][2]}, {det['bbox'][3]}]\n"
             text += f"    Detection Confidence: {det['detection_confidence']:.2%}\n\n"
     else:
-        text += "  No snakes detected by YOLO.\n\n"
+        text += f"SNAKE DETECTED: NO\n"
+        text += f"Total Snakes Detected: 0\n\n"
+        text += f"CLASSIFICATION: Not performed (no snake detected)\n\n"
     
     return text
 
@@ -317,7 +339,6 @@ def create_batch_download_package(results_list):
     zip_buffer = BytesIO()
     
     with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
-        # Create summary JSON for all images
         batch_summary = {
             "batch_timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "total_images": len(results_list),
@@ -344,30 +365,37 @@ def create_batch_download_package(results_list):
             text_data = create_result_text(filename, classification_label, classification_conf, detections)
             zip_file.writestr(f"reports/{filename}_report.txt", text_data)
             
-            # Add to batch summary
             batch_summary["results"].append(json_data)
         
         # Add batch summary
         zip_file.writestr("batch_summary.json", json.dumps(batch_summary, indent=2))
         
-        # Create overall summary text
+        # Create summary text
         summary_text = f"Batch Processing Summary\n"
         summary_text += f"{'=' * 50}\n\n"
         summary_text += f"Total Images Processed: {len(results_list)}\n"
         summary_text += f"Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
         
-        venomous_count = sum(1 for r in results_list if r['classification_label'] == 'venomous')
-        non_venomous_count = len(results_list) - venomous_count
+        images_with_snakes = sum(1 for r in results_list if r['classification_label'] is not None)
+        venomous_count = sum(1 for r in results_list if r['classification_label'] == 'Venomous')
+        non_venomous_count = sum(1 for r in results_list if r['classification_label'] == 'Non-Venomous')
         
-        summary_text += f"Classification Summary:\n"
+        summary_text += f"Detection Summary:\n"
+        summary_text += f"  Images with snakes: {images_with_snakes}\n"
+        summary_text += f"  Images without snakes: {len(results_list) - images_with_snakes}\n\n"
+        summary_text += f"Classification Summary (for detected snakes):\n"
         summary_text += f"  Venomous: {venomous_count}\n"
         summary_text += f"  Non-venomous: {non_venomous_count}\n\n"
         
         summary_text += f"Detailed Results:\n"
         for result in results_list:
             summary_text += f"\n  {result['filename']}:\n"
-            summary_text += f"    Classification: {result['classification_label'].upper()} ({result['classification_conf']:.2%})\n"
-            summary_text += f"    Detections: {len(result['detections'])} snake(s)\n"
+            if result['classification_label'] is not None:
+                summary_text += f"    Snake Detected: YES\n"
+                summary_text += f"    Classification: {result['classification_label'].upper()} ({result['classification_conf']:.2%})\n"
+                summary_text += f"    Detections: {len(result['detections'])} snake(s)\n"
+            else:
+                summary_text += f"    Snake Detected: NO\n"
         
         zip_file.writestr("batch_summary.txt", summary_text)
     
@@ -408,11 +436,11 @@ def main():
     
     st.sidebar.markdown("---")
     st.sidebar.info(
-        "**New Pipeline:**\n"
-        "1. **Classify** the full image as venomous/non-venomous\n"
-        "2. **Detect** snake locations with YOLO\n"
-        "3. **Draw** bounding boxes with classification result\n\n"
-        "This approach uses the full image for better classification accuracy!"
+        "**Improved Pipeline:**\n"
+        "1. **Detect** snakes using YOLO first\n"
+        "2. **Only if snake detected** → Classify full image\n"
+        "3. **Draw** bounding boxes with classification\n\n"
+        "✅ No classification if no snake found!"
     )
     
     # ---------------------------
@@ -424,11 +452,10 @@ def main():
         uploaded_file = st.file_uploader(
             "Choose an image...",
             type=["jpg", "jpeg", "png"],
-            help="Upload an image containing a snake"
+            help="Upload an image that may contain a snake"
         )
         
         if uploaded_file is not None:
-            # Display original image
             image = Image.open(uploaded_file)
             
             col1, col2 = st.columns(2)
@@ -437,9 +464,9 @@ def main():
                 st.subheader("Original Image")
                 st.image(image, use_container_width=True)
             
-            # Process image with new pipeline
-            with st.spinner("Classifying and detecting snakes..."):
-                processed_img, classification_label, classification_conf, detections = classify_then_detect(
+            # Process image
+            with st.spinner("Detecting snakes..."):
+                processed_img, classification_label, classification_conf, detections = detect_then_classify(
                     image, yolo_model, classifier_model, conf_threshold
                 )
             
@@ -447,81 +474,88 @@ def main():
                 st.subheader("Detection Results")
                 st.image(processed_img, use_container_width=True)
             
-            # Display classification result prominently
-            label_class = "venomous" if classification_label == "venomous" else "non-venomous"
-            box_class = "venomous-box" if classification_label == "venomous" else "non-venomous-box"
-            
-            st.markdown(
-                f'<div class="classification-box {box_class}">'
-                f'<span class="{label_class}">Classification: {classification_label.upper()}</span><br>'
-                f'Confidence: {classification_conf:.2%}'
-                f'</div>',
-                unsafe_allow_html=True
-            )
-            
-            # Display detection details
+            # Display results
             if detections:
+                # Snake detected AND classified
                 st.success(f"✅ Found {len(detections)} snake(s) in the image!")
+                
+                # Show classification result
+                label_class = "venomous" if classification_label == "Venomous" else "non-venomous"
+                box_class = "venomous-box" if classification_label == "Venomous" else "non-venomous-box"
+                
+                st.markdown(
+                    f'<div class="classification-box {box_class}">'
+                    f'<span class="{label_class}">Classification: {classification_label.upper()}</span><br>'
+                    f'Confidence: {classification_conf:.2%}'
+                    f'</div>',
+                    unsafe_allow_html=True
+                )
                 
                 for idx, det in enumerate(detections, 1):
                     st.markdown(
                         f"**Snake {idx}:** Detection Confidence: {det['detection_confidence']:.2%}",
                     )
             else:
-                st.warning("⚠️ No snakes detected by YOLO, but image was classified.")
+                # NO SNAKE DETECTED
+                st.markdown(
+                    '<div class="no-snake-box">'
+                    '<h3>🚫 No Snake Detected</h3>'
+                    '<p>The YOLO model did not find any snakes in this image.</p>'
+                    '<p>Try: Adjusting the confidence threshold or uploading a different image.</p>'
+                    '</div>',
+                    unsafe_allow_html=True
+                )
             
-            # Download Section
-            st.markdown("---")
-            st.subheader("📥 Download Results")
-            
-            col1, col2, col3 = st.columns(3)
-            
-            with col1:
-                # Download processed image
-                img_buffer = BytesIO()
-                Image.fromarray(processed_img).save(img_buffer, format='PNG')
-                img_buffer.seek(0)
+            # Download Section (only if snake detected)
+            if detections:
+                st.markdown("---")
+                st.subheader("📥 Download Results")
                 
-                st.download_button(
-                    label="📷 Download Image",
-                    data=img_buffer,
-                    file_name=f"{uploaded_file.name.split('.')[0]}_processed.png",
-                    mime="image/png"
-                )
-            
-            with col2:
-                # Download JSON report
-                json_data = create_result_json(
-                    uploaded_file.name, 
-                    classification_label, 
-                    classification_conf, 
-                    detections
-                )
+                col1, col2, col3 = st.columns(3)
                 
-                st.download_button(
-                    label="📄 Download JSON",
-                    data=json.dumps(json_data, indent=2),
-                    file_name=f"{uploaded_file.name.split('.')[0]}_report.json",
-                    mime="application/json"
-                )
-            
-            with col3:
-                # Download complete package (ZIP)
-                zip_buffer = create_download_package(
-                    processed_img,
-                    uploaded_file.name.split('.')[0],
-                    classification_label,
-                    classification_conf,
-                    detections
-                )
+                with col1:
+                    img_buffer = BytesIO()
+                    Image.fromarray(processed_img).save(img_buffer, format='PNG')
+                    img_buffer.seek(0)
+                    
+                    st.download_button(
+                        label="📷 Download Image",
+                        data=img_buffer,
+                        file_name=f"{uploaded_file.name.split('.')[0]}_processed.png",
+                        mime="image/png"
+                    )
                 
-                st.download_button(
-                    label="📦 Download Package",
-                    data=zip_buffer,
-                    file_name=f"{uploaded_file.name.split('.')[0]}_results.zip",
-                    mime="application/zip",
-                    help="Downloads a ZIP with image, JSON, and text report"
-                )
+                with col2:
+                    json_data = create_result_json(
+                        uploaded_file.name, 
+                        classification_label, 
+                        classification_conf, 
+                        detections
+                    )
+                    
+                    st.download_button(
+                        label="📄 Download JSON",
+                        data=json.dumps(json_data, indent=2),
+                        file_name=f"{uploaded_file.name.split('.')[0]}_report.json",
+                        mime="application/json"
+                    )
+                
+                with col3:
+                    zip_buffer = create_download_package(
+                        processed_img,
+                        uploaded_file.name.split('.')[0],
+                        classification_label,
+                        classification_conf,
+                        detections
+                    )
+                    
+                    st.download_button(
+                        label="📦 Download Package",
+                        data=zip_buffer,
+                        file_name=f"{uploaded_file.name.split('.')[0]}_results.zip",
+                        mime="application/zip",
+                        help="Downloads ZIP with image, JSON, and text report"
+                    )
     
     # ---------------------------
     # Batch Upload Mode
@@ -539,10 +573,8 @@ def main():
         if uploaded_files:
             st.info(f"Processing {len(uploaded_files)} image(s)...")
             
-            # Store all results for batch download
             batch_results = []
             
-            # Process each image
             for idx, uploaded_file in enumerate(uploaded_files, 1):
                 st.markdown(f"### Image {idx}: {uploaded_file.name}")
                 
@@ -554,28 +586,27 @@ def main():
                     st.image(image, caption="Original", use_container_width=True)
                 
                 with st.spinner(f"Processing image {idx}..."):
-                    processed_img, classification_label, classification_conf, detections = classify_then_detect(
+                    processed_img, classification_label, classification_conf, detections = detect_then_classify(
                         image, yolo_model, classifier_model, conf_threshold
                     )
                 
                 with col2:
                     st.image(processed_img, caption="Processed", use_container_width=True)
                 
-                # Classification result
-                label_class = "venomous" if classification_label == "venomous" else "non-venomous"
-                st.markdown(
-                    f"**Classification:** <span class='{label_class}'>{classification_label.upper()}</span> "
-                    f"({classification_conf:.2%})",
-                    unsafe_allow_html=True
-                )
-                
-                # Detection result
+                # Display results
                 if detections:
-                    st.success(f"Found {len(detections)} snake(s)")
+                    st.success(f"✅ Found {len(detections)} snake(s)")
+                    
+                    label_class = "venomous" if classification_label == "Venomous" else "non-venomous"
+                    st.markdown(
+                        f"**Classification:** <span class='{label_class}'>{classification_label.upper()}</span> "
+                        f"({classification_conf:.2%})",
+                        unsafe_allow_html=True
+                    )
                 else:
-                    st.warning("No snakes detected by YOLO")
+                    st.error("🚫 No snake detected")
                 
-                # Store result for batch download
+                # Store result
                 batch_results.append({
                     'filename': uploaded_file.name,
                     'processed_img': processed_img,
@@ -586,42 +617,41 @@ def main():
                 
                 st.markdown("---")
             
-            # Batch download section
+            # Batch download
             st.markdown("---")
             st.subheader("📥 Download All Results")
-            st.info(f"Download all {len(batch_results)} processed images with reports in a single ZIP file")
             
-            # Create batch download package
             batch_zip = create_batch_download_package(batch_results)
             
             st.download_button(
                 label=f"📦 Download All Results ({len(batch_results)} images)",
                 data=batch_zip,
                 file_name=f"batch_results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip",
-                mime="application/zip",
-                help="Downloads a ZIP with all processed images, individual reports, and a batch summary"
+                mime="application/zip"
             )
             
-            # Show batch statistics
+            # Batch statistics
             with st.expander("📊 Batch Statistics"):
-                venomous_count = sum(1 for r in batch_results if r['classification_label'] == 'venomous')
-                non_venomous_count = len(batch_results) - venomous_count
-                total_detections = sum(len(r['detections']) for r in batch_results)
+                images_with_snakes = sum(1 for r in batch_results if r['classification_label'] is not None)
+                venomous_count = sum(1 for r in batch_results if r['classification_label'] == 'Venomous')
+                non_venomous_count = sum(1 for r in batch_results if r['classification_label'] == 'Non-Venomous')
                 
-                col1, col2, col3 = st.columns(3)
+                col1, col2, col3, col4 = st.columns(4)
                 with col1:
-                    st.metric("Venomous", venomous_count)
+                    st.metric("Total Images", len(batch_results))
                 with col2:
-                    st.metric("Non-venomous", non_venomous_count)
+                    st.metric("With Snakes", images_with_snakes)
                 with col3:
-                    st.metric("Total Detections", total_detections)
+                    st.metric("Venomous", venomous_count)
+                with col4:
+                    st.metric("Non-venomous", non_venomous_count)
     
     # ---------------------------
     # Webcam Mode
     # ---------------------------
     elif mode == "📹 Webcam (Real-time)":
         st.header("Real-time Webcam Detection")
-        st.warning("⚠️ This feature requires camera permissions and may not work on all deployments.")
+        st.warning("⚠️ This feature requires camera permissions and may not work on cloud deployments.")
         
         run_webcam = st.checkbox("Start Webcam")
         
@@ -639,24 +669,23 @@ def main():
                     st.error("Failed to access webcam")
                     break
                 
-                # Convert BGR to RGB
                 frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 
-                # Process frame with new pipeline
-                processed_frame, classification_label, classification_conf, detections = classify_then_detect(
+                processed_frame, classification_label, classification_conf, detections = detect_then_classify(
                     frame_rgb, yolo_model, classifier_model, conf_threshold
                 )
                 
-                # Display processed frame
                 stframe.image(processed_frame, channels="RGB", use_container_width=True)
                 
-                # Display classification
-                label_class = "venomous" if classification_label == "venomous" else "non-venomous"
-                classification_placeholder.markdown(
-                    f"**Current Classification:** <span class='{label_class}'>{classification_label.upper()}</span> "
-                    f"({classification_conf:.2%})",
-                    unsafe_allow_html=True
-                )
+                if detections:
+                    label_class = "venomous" if classification_label == "Venomous" else "non-venomous"
+                    classification_placeholder.markdown(
+                        f"**Classification:** <span class='{label_class}'>{classification_label.upper()}</span> "
+                        f"({classification_conf:.2%}) | Detected: {len(detections)} snake(s)",
+                        unsafe_allow_html=True
+                    )
+                else:
+                    classification_placeholder.warning("🚫 No snake detected in frame")
             
             camera.release()
 
